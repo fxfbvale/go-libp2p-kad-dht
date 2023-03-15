@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -21,6 +23,26 @@ import (
 	record "github.com/libp2p/go-libp2p-record"
 	"github.com/multiformats/go-multihash"
 )
+
+var (
+	WarningLogger *log.Logger
+	InfoLogger    *log.Logger
+	ErrorLogger   *log.Logger
+)
+
+func init() {
+	file, err := os.OpenFile("vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	InfoLogger = log.New(file, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	WarningLogger = log.New(file, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLogger = log.New(file, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+
+	InfoLogger.Println("DHT Called")
+
+}
 
 // This file implements the Routing interface for the IpfsDHT struct.
 
@@ -69,6 +91,8 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	if err != nil {
 		return err
 	}
+
+	InfoLogger.Println("Closest Peers to ", key, "are: ", peers)
 
 	wg := sync.WaitGroup{}
 	for _, p := range peers {
