@@ -92,6 +92,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		return err
 	}
 
+	//valeLogs
 	InfoLogger.Println("Closest Peers to ", key, "are: ", peers)
 
 	wg := sync.WaitGroup{}
@@ -154,6 +155,9 @@ func (dht *IpfsDHT) GetValue(ctx context.Context, key string, opts ...routing.Op
 		return nil, routing.ErrNotFound
 	}
 	logger.Debugf("GetValue %v %x", internal.LoggableRecordKeyString(key), best)
+
+	//valeLogs
+	InfoLogger.Println("GetValue of key ", key, " returned ", best)
 	return best, nil
 }
 
