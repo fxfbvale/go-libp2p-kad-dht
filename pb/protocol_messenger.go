@@ -15,7 +15,11 @@ import (
 	"github.com/libp2p/go-libp2p-kad-dht/internal"
 )
 
-var logger = logging.Logger("dht")
+var (
+	logger = logging.Logger("dht")
+	//valeLogger = logging.Logger("vale")
+
+)
 
 // ProtocolMessenger can be used for sending DHT messages to peers and processing their responses.
 // This decouples the wire protocol format from both the DHT protocol implementation and from the implementation of the

@@ -4,43 +4,41 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
-	"os"
+	internalConfig "github.com/libp2p/go-libp2p-kad-dht/internal/config"
 	"sync"
 	"time"
 
+	"github.com/ipfs/go-cid"
+	u "github.com/ipfs/go-ipfs-util"
+	logging "github.com/ipfs/go-log"
+	"github.com/libp2p/go-libp2p-kad-dht/internal"
+	"github.com/libp2p/go-libp2p-kad-dht/qpeerset"
+	kb "github.com/libp2p/go-libp2p-kbucket"
+	record "github.com/libp2p/go-libp2p-record"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/routing"
-
-	"github.com/ipfs/go-cid"
-	u "github.com/ipfs/go-ipfs-util"
-	"github.com/libp2p/go-libp2p-kad-dht/internal"
-	internalConfig "github.com/libp2p/go-libp2p-kad-dht/internal/config"
-	"github.com/libp2p/go-libp2p-kad-dht/qpeerset"
-	kb "github.com/libp2p/go-libp2p-kbucket"
-	record "github.com/libp2p/go-libp2p-record"
 	"github.com/multiformats/go-multihash"
 )
 
-var (
-	WarningLogger *log.Logger
-	InfoLogger    *log.Logger
-	ErrorLogger   *log.Logger
-)
+var valeLogger = logging.Logger("vale")
 
 func init() {
-	file, err := os.OpenFile("vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	lvl, err := logging.LevelFromString("info")
+	//file, err := os.OpenFile("vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+	logging.SetAllLoggers(lvl)
 
-	InfoLogger = log.New(file, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	WarningLogger = log.New(file, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrorLogger = log.New(file, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	/*
+		InfoLogger = log.New(file, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+		WarningLogger = log.New(file, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+		ErrorLogger = log.New(file, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 
-	InfoLogger.Println("DHT Called")
+		InfoLogger.Println("DHT Called")
+	*/
 
 }
 
@@ -93,7 +91,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	}
 
 	//valeLogs
-	InfoLogger.Println("Closest Peers to ", key, "are: ", peers)
+	valeLogger.Infoln("Closest Peers to", key, "are:", peers)
 
 	wg := sync.WaitGroup{}
 	for _, p := range peers {
@@ -157,7 +155,7 @@ func (dht *IpfsDHT) GetValue(ctx context.Context, key string, opts ...routing.Op
 	logger.Debugf("GetValue %v %x", internal.LoggableRecordKeyString(key), best)
 
 	//valeLogs
-	InfoLogger.Println("GetValue of key ", key, " returned ", best)
+	valeLogger.Infoln("GetValue of key", key, "returned ", best)
 	return best, nil
 }
 
