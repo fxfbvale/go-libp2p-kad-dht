@@ -16,9 +16,8 @@ import (
 )
 
 var (
-	logger = logging.Logger("dht")
-	//valeLogger = logging.Logger("vale")
-
+	logger     = logging.Logger("dht")
+	valeLogger = logging.Logger("vale")
 )
 
 // ProtocolMessenger can be used for sending DHT messages to peers and processing their responses.
@@ -62,6 +61,7 @@ func (pm *ProtocolMessenger) PutValue(ctx context.Context, p peer.ID, rec *recpb
 	pmes := NewMessage(Message_PUT_VALUE, rec.Key, 0)
 	pmes.Record = rec
 	rpmes, err := pm.m.SendRequest(ctx, p, pmes)
+	valeLogger.Infoln("putting value", rec.Value, "and key", rec.Key, "to peer", p.String())
 	if err != nil {
 		logger.Debugw("failed to put value to peer", "to", p, "key", internal.LoggableRecordKeyBytes(rec.Key), "error", err)
 		return err
