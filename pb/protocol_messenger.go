@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	logger = logging.Logger("vale")
+	logger = logging.Logger("dht")
 )
 
 // ProtocolMessenger can be used for sending DHT messages to peers and processing their responses.
