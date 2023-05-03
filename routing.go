@@ -31,7 +31,7 @@ var (
 )
 
 func init() {
-	file, err := os.OpenFile("/vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	file, err := os.OpenFile("vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +93,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	}
 
 	//valeLogs
-	InfoLogger.Println("Closest Peers to", key, "are:", peers)
+	InfoLogger.Println("Closest Peers to", internal.LoggableRecordKeyString(key), "are:", peers)
 
 	wg := sync.WaitGroup{}
 	for _, p := range peers {
@@ -157,6 +157,7 @@ func (dht *IpfsDHT) GetValue(ctx context.Context, key string, opts ...routing.Op
 	logger.Debugf("GetValue %v %x", internal.LoggableRecordKeyString(key), best)
 
 	//valeLogs
+	InfoLogger.Println("Getting values")
 	InfoLogger.Println("GetValue of key", key, "returned ", best)
 	return best, nil
 }
