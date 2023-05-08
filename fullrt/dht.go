@@ -509,6 +509,7 @@ type RecvdVal struct {
 
 // GetValue searches for the value corresponding to given Key.
 func (dht *FullRT) GetValue(ctx context.Context, key string, opts ...routing.Option) (_ []byte, err error) {
+
 	if !dht.enableValues {
 		return nil, routing.ErrNotSupported
 	}
@@ -538,6 +539,7 @@ func (dht *FullRT) GetValue(ctx context.Context, key string, opts ...routing.Opt
 		return nil, routing.ErrNotFound
 	}
 	logger.Debugf("GetValue %v %x", internal.LoggableRecordKeyString(key), best)
+
 	return best, nil
 }
 
@@ -684,6 +686,7 @@ type lookupWithFollowupResult struct {
 }
 
 func (dht *FullRT) getValues(ctx context.Context, key string, stopQuery chan struct{}) (<-chan RecvdVal, <-chan *lookupWithFollowupResult) {
+
 	valCh := make(chan RecvdVal, 1)
 	lookupResCh := make(chan *lookupWithFollowupResult, 1)
 

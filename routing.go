@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/ipfs/go-cid"
 	u "github.com/ipfs/go-ipfs-util"
+	pb "github.com/ipfs/go-ipns/pb"
 	//logging "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p-kad-dht/internal"
 	"github.com/libp2p/go-libp2p-kad-dht/qpeerset"
@@ -25,23 +27,19 @@ import (
 )
 
 var (
-	WarningLogger *log.Logger
-	InfoLogger    *log.Logger
-	ErrorLogger   *log.Logger
+	PublishLogger *log.Logger
+	ResolveLogger *log.Logger
 )
 
 func init() {
-	file, err := os.OpenFile("vale.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	pubFile, err := os.OpenFile("publish.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	resFile, err := os.OpenFile("resolve.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		panic(err)
 	}
 
-	InfoLogger = log.New(file, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	WarningLogger = log.New(file, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrorLogger = log.New(file, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
-
-	InfoLogger.Println("DHT Called")
-
+	PublishLogger = log.New(pubFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ResolveLogger = log.New(resFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 // This file implements the Routing interface for the IpfsDHT struct.
@@ -87,13 +85,23 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		return err
 	}
 
+	//valeLogs
+	t1 := time.Now()
+	if ctx.Value("ipns") != nil {
+		PublishLogger.Println("Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+		//change the context value, so I can print only things that are relevant to the putValue process
+		ctx = context.WithValue(ctx, "process", "putValue")
+		ctx = context.WithValue(ctx, "time", t1)
+	}
 	peers, err := dht.GetClosestPeers(ctx, key)
 	if err != nil {
 		return err
 	}
 
 	//valeLogs
-	InfoLogger.Println("Closest Peers to", internal.LoggableRecordKeyString(key), "are:", peers)
+	if ctx.Value("ipns") != nil {
+		PublishLogger.Println("Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+	}
 
 	wg := sync.WaitGroup{}
 	for _, p := range peers {
@@ -156,14 +164,12 @@ func (dht *IpfsDHT) GetValue(ctx context.Context, key string, opts ...routing.Op
 	}
 	logger.Debugf("GetValue %v %x", internal.LoggableRecordKeyString(key), best)
 
-	//valeLogs
-	InfoLogger.Println("Getting values")
-	InfoLogger.Println("GetValue of key", key, "returned ", best)
 	return best, nil
 }
 
 // SearchValue searches for the value corresponding to given Key and streams the results.
 func (dht *IpfsDHT) SearchValue(ctx context.Context, key string, opts ...routing.Option) (<-chan []byte, error) {
+
 	if !dht.enableValues {
 		return nil, routing.ErrNotSupported
 	}
@@ -176,7 +182,12 @@ func (dht *IpfsDHT) SearchValue(ctx context.Context, key string, opts ...routing
 	responsesNeeded := 0
 	if !cfg.Offline {
 		responsesNeeded = internalConfig.GetQuorum(&cfg)
+
 	}
+
+	//valeLogs
+	ctx = context.WithValue(ctx, "process", "searchValue")
+	ctx = context.WithValue(ctx, "time", time.Now())
 
 	stopCh := make(chan struct{})
 	valCh, lookupRes := dht.getValues(ctx, key, stopCh)
@@ -299,6 +310,7 @@ func (dht *IpfsDHT) updatePeerValues(ctx context.Context, key string, val []byte
 }
 
 func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan struct{}) (<-chan recvdVal, <-chan *lookupWithFollowupResult) {
+
 	valCh := make(chan recvdVal, 1)
 	lookupResCh := make(chan *lookupWithFollowupResult, 1)
 
@@ -314,6 +326,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 		}
 	}
 
+	times := 1
 	go func() {
 		defer close(valCh)
 		defer close(lookupResCh)
@@ -325,10 +338,15 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 					ID:   p,
 				})
 
+				//valeLogs
+				t1 := time.Now()
+
 				rec, peers, err := dht.protoMessenger.GetValue(ctx, p, key)
 				if err != nil {
 					return nil, err
 				}
+
+				t2 := time.Since(t1)
 
 				// For DHT query command
 				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
@@ -346,10 +364,30 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 					logger.Debug("received a nil record value")
 					return peers, nil
 				}
+
+				//after this I know that the record is valid
 				if err := dht.Validator.Validate(key, val); err != nil {
 					// make sure record is valid
 					logger.Debugw("received invalid record (discarded)", "error", err)
 					return peers, nil
+				}
+
+				if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
+					//aqui vou ter que processar o record
+					e := new(pb.IpnsEntry)
+					if err := proto.Unmarshal(val, e); err != nil {
+						ResolveLogger.Println("Error unmarshaling record:", err)
+						return peers, nil
+					}
+
+					validity, err := u.ParseRFC3339(string(e.GetValidity()))
+					if err != nil {
+						ResolveLogger.Println("Error parsing validity:", err)
+						return peers, nil
+					}
+					ResolveLogger.Println("Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity, "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
+					times++
+
 				}
 
 				// the record is present and valid, send it out for processing

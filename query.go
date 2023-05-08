@@ -266,6 +266,7 @@ func (q *query) run() {
 
 	ch := make(chan *queryUpdate, alpha)
 	ch <- &queryUpdate{cause: q.dht.self, heard: q.seedPeers}
+	//valeLogs
 
 	// return only once all outstanding queries have completed.
 	defer q.waitGroup.Wait()
@@ -471,6 +472,7 @@ func (q *query) updateState(ctx context.Context, up *queryUpdate) {
 			continue
 		}
 		q.queryPeers.TryAdd(p, up.cause)
+		//valeLogs
 	}
 	for _, p := range up.queried {
 		if p == q.dht.self { // don't add self.

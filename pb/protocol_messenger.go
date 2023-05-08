@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 
 	logging "github.com/ipfs/go-log"
 	recpb "github.com/libp2p/go-libp2p-record/pb"
@@ -97,8 +96,6 @@ func (pm *ProtocolMessenger) GetValue(ctx context.Context, p peer.ID, key string
 			logger.Debug("received incorrect record")
 			return nil, nil, internal.ErrIncorrectRecord
 		}
-
-		dht.InfoLogger.Println("Redord:", rec, "from peer:", p)
 
 		return rec, peers, err
 	}
