@@ -310,6 +310,9 @@ func (dht *IpfsDHT) updatePeerValues(ctx context.Context, key string, val []byte
 			err := dht.protoMessenger.PutValue(ctx, p, fixupRec)
 			if err != nil {
 				logger.Debug("Error correcting DHT entry: ", err)
+				if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
+					ErrResolveLogger.Println("Failed to update peer", p, "with more recent record")
+				}
 			}
 		}(p)
 	}
