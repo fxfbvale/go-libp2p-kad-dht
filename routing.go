@@ -28,7 +28,9 @@ import (
 
 var (
 	PublishLogger *log.Logger
+	ErrPublishLogger *log.Logger
 	ResolveLogger *log.Logger
+	ErrResolveLogger *log.Logger
 )
 
 func init() {
@@ -39,7 +41,9 @@ func init() {
 	}
 
 	PublishLogger = log.New(pubFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrPublishLogger = log.New(pubFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 	ResolveLogger = log.New(resFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrResolveLogger = log.New(resFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 // This file implements the Routing interface for the IpfsDHT struct.
@@ -95,6 +99,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	}
 	peers, err := dht.GetClosestPeers(ctx, key)
 	if err != nil {
+		ErrPublishLogger.Println("Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
 		return err
 	}
 
@@ -118,6 +123,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			err := dht.protoMessenger.PutValue(ctx, p, rec)
 			if err != nil {
 				logger.Debugf("failed putting value to peer: %s", err)
+				ErrPublishLogger.Println("Failed putting value to peer", p, err)
 			}
 		}(p)
 	}
@@ -362,6 +368,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				val := rec.GetValue()
 				if val == nil {
 					logger.Debug("received a nil record value")
+					ErrResolveLogger.Println("Received a nil record value and took", t2, "to process")
 					return peers, nil
 				}
 
@@ -369,6 +376,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				if err := dht.Validator.Validate(key, val); err != nil {
 					// make sure record is valid
 					logger.Debugw("received invalid record (discarded)", "error", err)
+					ErrResolveLogger.Println("Received invalid record (discarded)", err)
 					return peers, nil
 				}
 
@@ -376,13 +384,13 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 					//aqui vou ter que processar o record
 					e := new(pb.IpnsEntry)
 					if err := proto.Unmarshal(val, e); err != nil {
-						ResolveLogger.Println("Error unmarshaling record:", err)
+						ErrResolveLogger.Println("Failed to unmarshal record:", err)
 						return peers, nil
 					}
 
 					validity, err := u.ParseRFC3339(string(e.GetValidity()))
 					if err != nil {
-						ResolveLogger.Println("Error parsing validity:", err)
+						ErrResolveLogger.Println("Failed to parse validity:", err)
 						return peers, nil
 					}
 					ResolveLogger.Println("Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity, "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
