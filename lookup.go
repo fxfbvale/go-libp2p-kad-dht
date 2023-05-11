@@ -44,8 +44,8 @@ func (dht *IpfsDHT) GetClosestPeers(ctx context.Context, key string) ([]peer.ID,
 				for _, peer := range peers {
 					closest = append(closest, peer.ID.String())
 				}
-				PublishLogger.Println("Closest peers from", p.String(), "to recordKey", internal.LoggableRecordKeyString(key), "are", closest)
-				PublishLogger.Println("Took", time.Since(t), "and was found after", time.Since(ctx.Value("time").(time.Time)))
+				PublishLogger.Println("ID:", ctx.Value("id"), "Closest peers from", p.String(), "to recordKey", internal.LoggableRecordKeyString(key), "are", closest)
+				PublishLogger.Println("ID:", ctx.Value("id"), "Took", time.Since(t), "and was found after", time.Since(ctx.Value("time").(time.Time)))
 			}
 			
 			// For DHT query command

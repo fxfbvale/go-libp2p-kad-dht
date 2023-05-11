@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/google/uuid"
 	internalConfig "github.com/libp2p/go-libp2p-kad-dht/internal/config"
 	"log"
 	"os"
@@ -94,20 +93,20 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	//valeLogs
 	t1 := time.Now()
 	if ctx.Value("ipns") != nil {
-		PublishLogger.Println("Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+		PublishLogger.Println("ID:", ctx.Value("id"), "Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
 		//change the context value, so I can print only things that are relevant to the putValue process
 		ctx = context.WithValue(ctx, "process", "putValue")
 		ctx = context.WithValue(ctx, "time", t1)
 	}
 	peers, err := dht.GetClosestPeers(ctx, key)
 	if err != nil {
-		ErrPublishLogger.Println("Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+		ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
 		return err
 	}
 
 	//valeLogs
 	if ctx.Value("ipns") != nil {
-		PublishLogger.Println("Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+		PublishLogger.Println("ID:", ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
 	}
 
 	wg := sync.WaitGroup{}
@@ -125,7 +124,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			err := dht.protoMessenger.PutValue(ctx, p, rec)
 			if err != nil {
 				logger.Debugf("failed putting value to peer: %s", err)
-				ErrPublishLogger.Println("Failed putting value to peer", p, err)
+				ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
 			}
 		}(p)
 	}
@@ -344,7 +343,6 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 	}
 
 	times := uint64(0)
-	resolveID := uuid.New().String()
 
 	go func() {
 		defer close(valCh)
@@ -381,7 +379,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				val := rec.GetValue()
 				if val == nil {
 					logger.Debug("received a nil record value")
-					ErrResolveLogger.Println("Received a nil record value and took", t2, "to process")
+					ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received a nil record value and took", t2, "to process")
 					return peers, nil
 				}
 
@@ -389,7 +387,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				if err := dht.Validator.Validate(key, val); err != nil {
 					// make sure record is valid
 					logger.Debugw("received invalid record (discarded)", "error", err)
-					ErrResolveLogger.Println("Received invalid record (discarded)", err)
+					ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received invalid record (discarded)", err)
 					return peers, nil
 				}
 
@@ -397,7 +395,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 					//aqui vou ter que processar o record
 					e := new(pb.IpnsEntry)
 					if err := proto.Unmarshal(val, e); err != nil {
-						ErrResolveLogger.Println("Failed to unmarshal record:", err)
+						ErrResolveLogger.Println("ID:", ctx.Value("id"), "Failed to unmarshal record:", err)
 						return peers, nil
 					}
 
@@ -406,7 +404,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 						ErrResolveLogger.Println("Failed to parse validity:", err)
 						return peers, nil
 					}
-					ResolveLogger.Println("ID:", resolveID, "Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity.Format("2006/01/02 15:04:05"), "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
+					ResolveLogger.Println("ID:", ctx.Value("id"), "Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity.Format("2006/01/02 15:04:05"), "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
 					atomic.AddUint64(&times, 1)
 
 				}
