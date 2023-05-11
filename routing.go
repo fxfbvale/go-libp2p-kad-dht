@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	internalConfig "github.com/libp2p/go-libp2p-kad-dht/internal/config"
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
@@ -40,10 +42,10 @@ func init() {
 		panic(err)
 	}
 
-	PublishLogger = log.New(pubFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrPublishLogger = log.New(pubFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ResolveLogger = log.New(resFile, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrResolveLogger = log.New(resFile, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	PublishLogger = log.New(pubFile, "INFO: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
+	ErrPublishLogger = log.New(pubFile, "ERROR: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
+	ResolveLogger = log.New(resFile, "INFO: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
+	ErrResolveLogger = log.New(resFile, "ERROR: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
 }
 
 // This file implements the Routing interface for the IpfsDHT struct.
@@ -307,12 +309,18 @@ func (dht *IpfsDHT) updatePeerValues(ctx context.Context, key string, val []byte
 			}
 			ctx, cancel := context.WithTimeout(ctx, time.Second*30)
 			defer cancel()
+			t1 := time.Now()
 			err := dht.protoMessenger.PutValue(ctx, p, fixupRec)
+			t2 := time.Since(t1)
 			if err != nil {
 				logger.Debug("Error correcting DHT entry: ", err)
 				if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
-					ErrResolveLogger.Println("Failed to update peer", p, "with more recent record")
+					ErrResolveLogger.Println("Failed to update peer", p, "with more recent record, took", t2, "error:", err)
 				}
+			}
+
+			if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
+				ResolveLogger.Println("Updated peer", p, "with more recent record, took:", t2)
 			}
 		}(p)
 	}
@@ -335,7 +343,9 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 		}
 	}
 
-	times := 1
+	times := uint64(0)
+	resolveID := uuid.New().String()
+
 	go func() {
 		defer close(valCh)
 		defer close(lookupResCh)
@@ -396,8 +406,8 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 						ErrResolveLogger.Println("Failed to parse validity:", err)
 						return peers, nil
 					}
-					ResolveLogger.Println("Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity, "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
-					times++
+					ResolveLogger.Println("ID:", resolveID, "Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity.Format("2006/01/02 15:04:05"), "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
+					atomic.AddUint64(&times, 1)
 
 				}
 
