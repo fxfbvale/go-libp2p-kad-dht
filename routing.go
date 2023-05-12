@@ -28,9 +28,9 @@ import (
 )
 
 var (
-	PublishLogger *log.Logger
+	PublishLogger    *log.Logger
 	ErrPublishLogger *log.Logger
-	ResolveLogger *log.Logger
+	ResolveLogger    *log.Logger
 	ErrResolveLogger *log.Logger
 )
 
@@ -100,7 +100,9 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 	}
 	peers, err := dht.GetClosestPeers(ctx, key)
 	if err != nil {
-		ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+		if ctx.Value("ipns") != nil {
+			ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+		}
 		return err
 	}
 
@@ -124,7 +126,11 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			err := dht.protoMessenger.PutValue(ctx, p, rec)
 			if err != nil {
 				logger.Debugf("failed putting value to peer: %s", err)
-				ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
+
+				//valeLogs
+				if ctx.Value("ipns") != nil {
+					ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
+				}
 			}
 		}(p)
 	}
@@ -379,7 +385,9 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				val := rec.GetValue()
 				if val == nil {
 					logger.Debug("received a nil record value")
-					ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received a nil record value and took", t2, "to process")
+					if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
+						ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received a nil record value and took", t2, "to process")
+					}
 					return peers, nil
 				}
 
@@ -387,7 +395,9 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 				if err := dht.Validator.Validate(key, val); err != nil {
 					// make sure record is valid
 					logger.Debugw("received invalid record (discarded)", "error", err)
-					ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received invalid record (discarded)", err)
+					if ctx.Value("process") == "searchValue" && ctx.Value("ipns") != nil {
+						ErrResolveLogger.Println("ID:", ctx.Value("id"), "Received invalid record (discarded)", err)
+					}
 					return peers, nil
 				}
 
@@ -404,7 +414,7 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, stopQuery chan st
 						ErrResolveLogger.Println("Failed to parse validity:", err)
 						return peers, nil
 					}
-					ResolveLogger.Println("ID:", ctx.Value("id"), "Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity.Format("2006/01/02 15:04:05"), "from", p.String(), "took" , t2, "found after", time.Since(ctx.Value("time").(time.Time)))
+					ResolveLogger.Println("ID:", ctx.Value("id"), "Received", times, "recordKey", internal.LoggableRecordKeyString(key), "version", e.GetSequence(), "validity", validity.Format("2006/01/02 15:04:05"), "from", p.String(), "took", t2, "found after", time.Since(ctx.Value("time").(time.Time)))
 					atomic.AddUint64(&times, 1)
 
 				}
