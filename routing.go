@@ -32,6 +32,7 @@ var (
 	ErrPublishLogger *log.Logger
 	ResolveLogger    *log.Logger
 	ErrResolveLogger *log.Logger
+	cPeers           cachedPeers
 )
 
 func init() {
@@ -45,6 +46,16 @@ func init() {
 	ErrPublishLogger = log.New(pubFile, "ERROR: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
 	ResolveLogger = log.New(resFile, "INFO: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
 	ErrResolveLogger = log.New(resFile, "ERROR: ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
+
+	cPeers = cachedPeers{
+		peers:    nil,
+		validity: time.Now(),
+	}
+}
+
+type cachedPeers struct {
+	peers    []peer.ID // the top K peers at the end of the query in a publish
+	validity time.Time // the time at which the peers are no longer valid
 }
 
 // This file implements the Routing interface for the IpfsDHT struct.
@@ -90,52 +101,172 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		return err
 	}
 
-	//valeLogs
-	t1 := time.Now()
 	if ctx.Value("ipns") != nil {
-		PublishLogger.Println("ID:", ctx.Value("id"), "Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
-		//change the context value, so I can print only things that are relevant to the putValue process
-		ctx = context.WithValue(ctx, "process", "putValue")
-		ctx = context.WithValue(ctx, "time", t1)
-	}
-	peers, err := dht.GetClosestPeers(ctx, key)
-	if err != nil {
-		if ctx.Value("ipns") != nil {
-			ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
-		}
-		return err
-	}
 
-	//valeLogs
-	if ctx.Value("ipns") != nil {
-		PublishLogger.Println("ID:", ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
-	}
+		foundPeers := false
+		peers := cPeers.peers
 
-	wg := sync.WaitGroup{}
-	for _, p := range peers {
-		wg.Add(1)
-		go func(p peer.ID) {
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			defer wg.Done()
-			routing.PublishQueryEvent(ctx, &routing.QueryEvent{
-				Type: routing.Value,
-				ID:   p,
-			})
+		if peers == nil || time.Now().After(cPeers.validity) {
 
-			err := dht.protoMessenger.PutValue(ctx, p, rec)
+			//valeLogs
+			t1 := time.Now()
+			PublishLogger.Println("ID:", ctx.Value("id"), "Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+			//change the context value, so I can print only things that are relevant to the putValue process
+			ctx = context.WithValue(ctx, "process", "putValue")
+			ctx = context.WithValue(ctx, "time", t1)
+
+			//finding new peers
+			peers, err = dht.GetClosestPeers(ctx, key)
+
 			if err != nil {
-				logger.Debugf("failed putting value to peer: %s", err)
-
-				//valeLogs
-				if ctx.Value("ipns") != nil {
-					ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
-				}
+				ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+				return err
 			}
-		}(p)
-	}
-	wg.Wait()
 
+			foundPeers = true
+			//valeLogs
+			PublishLogger.Println("ID:", ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+
+		} else {
+			//valeLogs
+			PublishLogger.Println("ID:", ctx.Value("id"), "Using cached closest peers to key", internal.LoggableRecordKeyString(key), peers)
+		}
+
+		wg := sync.WaitGroup{}
+		for _, p := range peers {
+			wg.Add(1)
+			go func(p peer.ID) {
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				defer wg.Done()
+				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
+					Type: routing.Value,
+					ID:   p,
+				})
+
+				err := dht.protoMessenger.PutValue(ctx, p, rec)
+				if err != nil {
+					logger.Debugf("failed putting value to peer: %s", err)
+
+					//valeLogs
+					ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
+
+				}
+			}(p)
+		}
+		wg.Wait()
+
+		go func() {
+			pCtx := context.WithValue(context.Background(), "id", ctx.Value("id"))
+			pCtx = context.WithValue(pCtx, "ipns", true)
+			var tmpPeers []peer.ID
+
+			if !foundPeers {
+
+				t1 := time.Now()
+				PublishLogger.Println("ID:", pCtx.Value("id"), "Concurrently getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+				//change the context value, so I can print only things that are relevant to the putValue process
+				pCtx = context.WithValue(pCtx, "process", "putValue")
+				pCtx = context.WithValue(pCtx, "time", t1)
+
+				tmpPeers, err = dht.GetClosestPeers(pCtx, key)
+
+				if err != nil {
+					ErrPublishLogger.Println("ID:", pCtx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key), err)
+					return
+				}
+
+				PublishLogger.Println("ID:", pCtx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+				cPeers.peers = tmpPeers
+
+			} else {
+
+				cPeers.peers = peers
+			}
+
+			e := new(pb.IpnsEntry)
+			if err := proto.Unmarshal(rec.Value, e); err != nil {
+				ErrPublishLogger.Println("ID:", pCtx.Value("id"), "Failed to unmarshal record:", err)
+				return
+			}
+
+			validity, err := u.ParseRFC3339(string(e.GetValidity()))
+			if err != nil {
+				ErrPublishLogger.Println("Failed to parse validity:", err)
+				return
+			}
+
+			cPeers.validity = validity
+
+		}()
+
+	} else {
+
+		peers, err := dht.GetClosestPeers(ctx, key)
+		if err != nil {
+			return err
+		}
+
+		wg := sync.WaitGroup{}
+		for _, p := range peers {
+			wg.Add(1)
+			go func(p peer.ID) {
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				defer wg.Done()
+				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
+					Type: routing.Value,
+					ID:   p,
+				})
+
+				err := dht.protoMessenger.PutValue(ctx, p, rec)
+				if err != nil {
+					logger.Debugf("failed putting value to peer: %s", err)
+
+				}
+			}(p)
+		}
+		wg.Wait()
+	}
+	/**
+		peers, err := dht.GetClosestPeers(ctx, key)
+		if err != nil {
+			if ctx.Value("ipns") != nil {
+				ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+			}
+			return err
+		}
+
+		//valeLogs
+		if ctx.Value("ipns") != nil {
+			PublishLogger.Println("ID:", ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+		}
+
+		wg := sync.WaitGroup{}
+		for _, p := range peers {
+			wg.Add(1)
+			go func(p peer.ID) {
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				defer wg.Done()
+				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
+					Type: routing.Value,
+					ID:   p,
+				})
+
+				err := dht.protoMessenger.PutValue(ctx, p, rec)
+				if err != nil {
+					logger.Debugf("failed putting value to peer: %s", err)
+
+					//valeLogs
+					if ctx.Value("ipns") != nil {
+						ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
+					}
+				}
+			}(p)
+		}
+		wg.Wait()
+	**/
 	return nil
 }
 
