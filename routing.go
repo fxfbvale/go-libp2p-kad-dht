@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/ipfs/go-ipns"
 	internalConfig "github.com/libp2p/go-libp2p-kad-dht/internal/config"
+	record_pb "github.com/libp2p/go-libp2p-record/pb"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"log"
 	"os"
 	"sync"
@@ -50,12 +53,16 @@ func init() {
 	cPeers = cachedPeers{
 		peers:    nil,
 		validity: time.Now(),
+		ctx:      nil,
+		cancel:   nil,
 	}
 }
 
 type cachedPeers struct {
-	peers    []peer.ID // the top K peers at the end of the query in a publish
-	validity time.Time // the time at which the peers are no longer valid
+	peers    []peer.ID          // the top K peers at the end of the query in a publish
+	validity time.Time          // the time at which the peers are no longer valid
+	ctx      context.Context    // the context of the query
+	cancel   context.CancelFunc // the cancel function of the query
 }
 
 // This file implements the Routing interface for the IpfsDHT struct.
@@ -107,7 +114,6 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		peers := cPeers.peers
 
 		if peers == nil || time.Now().After(cPeers.validity) {
-
 			//valeLogs
 			t1 := time.Now()
 			PublishLogger.Println("ID:", ctx.Value("id"), "Getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
@@ -130,63 +136,81 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		} else {
 			//valeLogs
 			PublishLogger.Println("ID:", ctx.Value("id"), "Using cached closest peers to key", internal.LoggableRecordKeyString(key), peers)
+			cPeers.cancel()
 		}
 
 		wg := sync.WaitGroup{}
-		for _, p := range peers {
-			wg.Add(1)
-			go func(p peer.ID) {
-				ctx, cancel := context.WithCancel(ctx)
+		// Publish to all peers except the last two IF im using the cached ones
+		var intersect int
+		if foundPeers {
+			intersect = 20
+		} else {
+			intersect = 18
+		}
+		//We will wait until 5 putValue operations are done to return
+		wg.Add(5)
+		var responsesNeeded uint64 = 0
+		t1 := time.Now()
+		for i := 0; i < intersect; i++ {
+			p := peers[i]
+			go func(p peer.ID, i int) {
+				nCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
-				defer wg.Done()
+				if responsesNeeded < 5 {
+					atomic.AddUint64(&responsesNeeded, 1)
+					defer wg.Done()
+				}
+
 				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
 					Type: routing.Value,
 					ID:   p,
 				})
 
-				err := dht.protoMessenger.PutValue(ctx, p, rec)
+				err := dht.protoMessenger.PutValue(nCtx, p, rec)
 				if err != nil {
 					logger.Debugf("failed putting value to peer: %s", err)
 
 					//valeLogs
 					ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
-
+				} else {
+					PublishLogger.Println("ID:", ctx.Value("id"), "PutValue to peer", p, "took", time.Since(t1))
 				}
-			}(p)
+			}(p, i)
 		}
 		wg.Wait()
 
 		go func() {
-			pCtx := context.WithValue(context.Background(), "id", ctx.Value("id"))
-			pCtx = context.WithValue(pCtx, "ipns", true)
-			var tmpPeers []peer.ID
+			cPeers.ctx, cPeers.cancel = context.WithTimeout(context.Background(), time.Minute)
+			defer cPeers.cancel()
+			cPeers.ctx = context.WithValue(cPeers.ctx, "id", ctx.Value("id"))
+			cPeers.ctx = context.WithValue(cPeers.ctx, "ipns", true)
 
+			var newPeers []peer.ID
 			if !foundPeers {
 
 				t1 := time.Now()
-				PublishLogger.Println("ID:", pCtx.Value("id"), "Concurrently getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Concurrently getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
 				//change the context value, so I can print only things that are relevant to the putValue process
-				pCtx = context.WithValue(pCtx, "process", "putValue")
-				pCtx = context.WithValue(pCtx, "time", t1)
+				cPeers.ctx = context.WithValue(cPeers.ctx, "process", "putValue")
+				cPeers.ctx = context.WithValue(cPeers.ctx, "time", t1)
 
-				tmpPeers, err = dht.GetClosestPeers(pCtx, key)
+				newPeers, err = dht.GetClosestPeers(cPeers.ctx, key)
 
 				if err != nil {
-					ErrPublishLogger.Println("ID:", pCtx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key), err)
+					ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key), err)
 					return
 				}
 
-				PublishLogger.Println("ID:", pCtx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
-				cPeers.peers = tmpPeers
+				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
 
 			} else {
 
-				cPeers.peers = peers
+				newPeers = peers
 			}
 
 			e := new(pb.IpnsEntry)
 			if err := proto.Unmarshal(rec.Value, e); err != nil {
-				ErrPublishLogger.Println("ID:", pCtx.Value("id"), "Failed to unmarshal record:", err)
+				ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed to unmarshal record:", err)
 				return
 			}
 
@@ -196,7 +220,33 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 				return
 			}
 
+			//ctx and not cPeers.ctx bcs we need the privKey
+			trashRecord, err := copyTrashRecord(e, key, ctx)
+
+			//cPeers -> previously cached closest peers
+			//newPeers -> new closest peers
+
+			//publishing trash ones
+			wg1 := sync.WaitGroup{}
+			for _, p := range cPeers.peers {
+				if !contains(p, newPeers) {
+					wg1.Add(1)
+					dht.updateRecord(p, cPeers.ctx, trashRecord, true, wg1)
+				}
+			}
+
+			//publishing updated ones
+			wg2 := sync.WaitGroup{}
+			for _, p := range newPeers {
+				if !contains(p, cPeers.peers) {
+					wg2.Add(1)
+					dht.updateRecord(p, cPeers.ctx, rec, false, wg2)
+				}
+
+			}
+
 			cPeers.validity = validity
+			cPeers.peers = newPeers
 
 		}()
 
@@ -268,6 +318,71 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		wg.Wait()
 	**/
 	return nil
+}
+
+func contains(id peer.ID, peers []peer.ID) bool {
+	for _, p := range peers {
+		if p == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (dht *IpfsDHT) updateRecord(p peer.ID, ctx context.Context, record *record_pb.Record, trash bool, wg sync.WaitGroup) {
+
+	t := time.Now()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer wg.Done()
+
+	routing.PublishQueryEvent(ctx, &routing.QueryEvent{
+		Type: routing.Value,
+		ID:   p,
+	})
+
+	err := dht.protoMessenger.PutValue(ctx, p, record)
+	if err != nil {
+		logger.Debugf("failed putting value to peer: %s", err)
+
+		//valeLogs
+		ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
+	} else {
+		if trash {
+			PublishLogger.Println("ID:", ctx.Value("id"), "PutValue TRASH to peer", p, "took", time.Since(t))
+		} else {
+			PublishLogger.Println("ID:", ctx.Value("id"), "PutValue UPDATE to peer", p, "took", time.Since(t))
+		}
+	}
+
+	return
+}
+
+func copyTrashRecord(rec *pb.IpnsEntry, key string, ctx context.Context) (*record_pb.Record, error) {
+	pKey := ctx.Value("pKey").(crypto.PrivKey)
+
+	validity, err := u.ParseRFC3339(string(rec.GetValidity()))
+	if err != nil {
+		ErrPublishLogger.Println("Failed to parse validity:", err)
+		return nil, err
+	}
+
+	// Create record with 1s TTL
+	entry, err := ipns.Create(pKey, rec.GetValue(), rec.GetSequence(), validity, time.Second)
+	if err != nil {
+		ErrPublishLogger.Println("Failed to create record:", err)
+		return nil, err
+	}
+
+	copyRec, err := proto.Marshal(entry)
+	if err != nil {
+		ErrPublishLogger.Println("Failed to marshal record:", err)
+		return nil, err
+	}
+
+	pubRec := record.MakePutRecord(key, copyRec)
+
+	return pubRec, err
 }
 
 // recvdVal stores a value and the peer from which we got the value.
