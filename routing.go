@@ -156,8 +156,8 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			go func(p peer.ID, i int) {
 				nCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
-				if responsesNeeded < 5 {
-					atomic.AddUint64(&responsesNeeded, 1)
+				responsesNeededNow := atomic.AddUint64(&responsesNeeded, 1)
+				if responsesNeededNow <= 5 {
 					defer wg.Done()
 				}
 
