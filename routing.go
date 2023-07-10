@@ -140,6 +140,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		}
 
 		wg := sync.WaitGroup{}
+		wg.Add(5)
 		// Publish to all peers except the last two IF im using the cached ones
 		var intersect int
 		if foundPeers {
@@ -147,19 +148,17 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		} else {
 			intersect = 18
 		}
+
 		//We will wait until 5 putValue operations are done to return
-		wg.Add(5)
+		done := make(chan bool, 1)
 		var responsesNeeded uint64 = 0
+		var totalAnswers uint64 = 0
 		t1 := time.Now()
 		for i := 0; i < intersect; i++ {
 			p := peers[i]
 			go func(p peer.ID, i int) {
 				nCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
-				responsesNeededNow := atomic.AddUint64(&responsesNeeded, 1)
-				if responsesNeededNow <= 5 {
-					defer wg.Done()
-				}
 
 				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
 					Type: routing.Value,
@@ -167,6 +166,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 				})
 
 				err := dht.protoMessenger.PutValue(nCtx, p, rec)
+				atomic.AddUint64(&totalAnswers, 1)
 				if err != nil {
 					logger.Debugf("failed putting value to peer: %s", err)
 
@@ -174,81 +174,89 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 					ErrPublishLogger.Println("ID:", ctx.Value("id"), "Failed putting value to peer", p, err)
 				} else {
 					PublishLogger.Println("ID:", ctx.Value("id"), "PutValue to peer", p, "took", time.Since(t1))
+					responsesNeededNow := atomic.AddUint64(&responsesNeeded, 1)
+					if responsesNeededNow <= 5 {
+						wg.Done()
+					}
+				}
+				if responsesNeeded >= 5 || totalAnswers >= uint64(intersect) {
+					done <- true
 				}
 			}(p, i)
 		}
-		wg.Wait()
 
-		go func() {
-			cPeers.ctx, cPeers.cancel = context.WithTimeout(context.Background(), time.Minute)
-			defer cPeers.cancel()
-			cPeers.ctx = context.WithValue(cPeers.ctx, "id", ctx.Value("id"))
-			cPeers.ctx = context.WithValue(cPeers.ctx, "ipns", true)
+		if <-done {
 
-			var newPeers []peer.ID
-			if !foundPeers {
+			go func() {
+				if cPeers.peers != nil {
+					cPeers.ctx.Done()
+					cPeers.cancel()
+				}
+				cPeers.ctx, cPeers.cancel = context.WithCancel(context.Background())
+				cPeers.ctx = context.WithValue(cPeers.ctx, "id", ctx.Value("id"))
+				cPeers.ctx = context.WithValue(cPeers.ctx, "ipns", true)
 
-				t1 := time.Now()
-				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Concurrently getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
-				//change the context value, so I can print only things that are relevant to the putValue process
-				cPeers.ctx = context.WithValue(cPeers.ctx, "process", "putValue")
-				cPeers.ctx = context.WithValue(cPeers.ctx, "time", t1)
+				var newPeers []peer.ID
+				if !foundPeers {
 
-				newPeers, err = dht.GetClosestPeers(cPeers.ctx, key)
+					t1 := time.Now()
+					PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Concurrently getting closest peers to recordKey", internal.LoggableRecordKeyString(key))
+					//change the context value, so I can print only things that are relevant to the putValue process
+					cPeers.ctx = context.WithValue(cPeers.ctx, "process", "putValue")
+					cPeers.ctx = context.WithValue(cPeers.ctx, "time", t1)
 
-				if err != nil {
-					ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key), err)
+					newPeers, err = dht.GetClosestPeers(cPeers.ctx, key)
+
+					if err != nil {
+						ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed getting closest peers to recordKey", internal.LoggableRecordKeyString(key), err)
+						return
+					}
+
+					PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+
+				} else {
+
+					newPeers = peers
+				}
+
+				e := new(pb.IpnsEntry)
+				if err := proto.Unmarshal(rec.Value, e); err != nil {
+					ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed to unmarshal record:", err)
 					return
 				}
 
-				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
-
-			} else {
-
-				newPeers = peers
-			}
-
-			e := new(pb.IpnsEntry)
-			if err := proto.Unmarshal(rec.Value, e); err != nil {
-				ErrPublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Failed to unmarshal record:", err)
-				return
-			}
-
-			validity, err := u.ParseRFC3339(string(e.GetValidity()))
-			if err != nil {
-				ErrPublishLogger.Println("Failed to parse validity:", err)
-				return
-			}
-
-			//ctx and not cPeers.ctx bcs we need the privKey
-			trashRecord, err := copyTrashRecord(e, key, ctx)
-
-			//cPeers -> previously cached closest peers
-			//newPeers -> new closest peers
-
-			//publishing trash ones
-			wg1 := sync.WaitGroup{}
-			for _, p := range cPeers.peers {
-				if !contains(p, newPeers) {
-					wg1.Add(1)
-					dht.updateRecord(p, cPeers.ctx, trashRecord, true, wg1)
-				}
-			}
-
-			//publishing updated ones
-			wg2 := sync.WaitGroup{}
-			for _, p := range newPeers {
-				if !contains(p, cPeers.peers) {
-					wg2.Add(1)
-					dht.updateRecord(p, cPeers.ctx, rec, false, wg2)
+				validity, err := u.ParseRFC3339(string(e.GetValidity()))
+				if err != nil {
+					ErrPublishLogger.Println("Failed to parse validity:", err)
+					return
 				}
 
-			}
+				//ctx and not cPeers.ctx bcs we need the privKey
+				trashRecord, err := copyTrashRecord(e, key, ctx)
 
-			cPeers.validity = validity
-			cPeers.peers = newPeers
+				//cPeers -> previously cached closest peers
+				//newPeers -> new closest peers
 
-		}()
+				//publishing updated ones
+				for _, p := range newPeers {
+					if !contains(p, cPeers.peers) {
+						go dht.updateRecord(p, cPeers.ctx, rec, false)
+					}
+
+				}
+
+				//publishing trash ones
+				for _, p := range cPeers.peers {
+					if !contains(p, newPeers) {
+						go dht.updateRecord(p, cPeers.ctx, trashRecord, true)
+					}
+				}
+
+				cPeers.validity = validity
+				cPeers.peers = newPeers
+
+			}()
+		}
 
 	} else {
 
@@ -329,12 +337,11 @@ func contains(id peer.ID, peers []peer.ID) bool {
 	return false
 }
 
-func (dht *IpfsDHT) updateRecord(p peer.ID, ctx context.Context, record *record_pb.Record, trash bool, wg sync.WaitGroup) {
+func (dht *IpfsDHT) updateRecord(p peer.ID, ctx context.Context, record *record_pb.Record, trash bool) {
 
 	t := time.Now()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer wg.Done()
 
 	routing.PublishQueryEvent(ctx, &routing.QueryEvent{
 		Type: routing.Value,
