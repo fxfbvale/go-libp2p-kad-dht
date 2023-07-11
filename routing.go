@@ -157,7 +157,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		for i := 0; i < intersect; i++ {
 			p := peers[i]
 			go func(p peer.ID, i int) {
-				nCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				nCtx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
 				routing.PublishQueryEvent(ctx, &routing.QueryEvent{
