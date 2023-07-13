@@ -264,7 +264,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			}
 
 			cPeers.validity = validity
-			copy(cPeers.peers, newPeers)
+			cPeers.peers = append(cPeers.peers, newPeers...)
 
 		}()
 
