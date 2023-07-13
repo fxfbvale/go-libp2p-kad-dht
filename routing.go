@@ -232,7 +232,7 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 					return
 				}
 
-				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), peers)
+				PublishLogger.Println("ID:", cPeers.ctx.Value("id"), "Found closest peers to key", internal.LoggableRecordKeyString(key), newPeers)
 
 				//ctx and not cPeers.ctx bcs we need the privKey
 				trashRecord, err := copyTrashRecord(e, key, ctx)
@@ -264,7 +264,12 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 			}
 
 			cPeers.validity = validity
-			cPeers.peers = append(cPeers.peers, newPeers...)
+
+			if len(cPeers.peers) == 0 {
+				cPeers.peers = append(cPeers.peers, newPeers...)
+			} else {
+				copy(cPeers.peers, newPeers)
+			}
 
 		}()
 
